@@ -31,7 +31,7 @@ cp .env.local.example .env.local
 
 Edit `.env.local`:
 - `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from supabase.com → project → Settings → API
-- `LLM_API_KEY` or `ANTHROPIC_API_KEY` — your Anthropic key (optional; rule-based fallback works without it)
+- `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `GROQ_API_KEY` — optional (rule-based fallback works without them)
 
 > **No API key?** The system works without one using rule-based risk scoring. All 10 firm constraints still fire correctly.
 

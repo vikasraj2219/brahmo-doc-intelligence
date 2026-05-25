@@ -148,11 +148,17 @@ export async function scoreClause(
 ): Promise<RiskScore> {
   const openaiKey = process.env.OPENAI_API_KEY; // Set in .env.local; if missing, will use fallback scoring
 
-  if (!openaiKey) return fallbackScore(chunk, nodes);
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY;
+
+  if (!openaiKey) {
+    // Try Gemini then GROQ before falling back to rule-based scorer
+    const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
+    if (alt) return alt;
+    return fallbackScore(chunk, nodes);
+  }
 
   const userPrompt = `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`;
-
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
   try {
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -172,55 +178,32 @@ export async function scoreClause(
         temperature: 0,
       }),
     });
-
     const data = await resp.json();
-    // If OpenAI reports insufficient quota or similar billing error, fallback to Anthropic if available
-    if (data?.error && (data.error.code === 'insufficient_quota' || data.error.type === 'insufficient_quota' || resp.status === 402)) {
-      if (anthropicKey) {
-        try {
-          const response = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": anthropicKey,
-              "anthropic-version": "2023-06-01",
-            },
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 1000,
-              system: buildSystemPrompt(nodes),
-              messages: [
-                {
-                  role: "user",
-                  content: userPrompt,
-                },
-              ],
-            }),
-          });
-
-          const adata = await response.json();
-          const atext = adata.content?.[0]?.text || "";
-          const aclean = atext.replace(/```json|```/g, "").trim();
-          const aparsed = JSON.parse(aclean);
-
-          return {
-            chunkId: chunk.id,
-            score: aparsed.score,
-            riskLevel: aparsed.riskLevel,
-            riskFactors: aparsed.riskFactors || [],
-            constraintViolations: aparsed.constraintViolations || [],
-            recommendation: aparsed.recommendation || "",
-          };
-        } catch (aerr) {
-          console.error("Anthropic fallback failed:", aerr);
-          return fallbackScore(chunk, nodes);
-        }
-      }
-    }
     console.log("OpenAI response:", JSON.stringify(data, null, 2));
+
+    // If OpenAI returned an error (e.g., insufficient_quota), try alternates
+    if (data?.error) {
+      console.warn("OpenAI error:", data.error);
+      const geminiKey = process.env.GEMINI_API_KEY;
+      const groqKey = process.env.GROQ_API_KEY;
+      const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
+      if (alt) return alt;
+      return fallbackScore(chunk, nodes);
+    }
+
     const text = data.choices?.[0]?.message?.content || "";
     const clean = (text || "").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(clean);
+    } catch (pe) {
+      console.warn("OpenAI JSON parse failed:", pe);
+      const geminiKey = process.env.GEMINI_API_KEY;
+      const groqKey = process.env.GROQ_API_KEY;
+      const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
+      if (alt) return alt;
+      return fallbackScore(chunk, nodes);
+    }
 
     return {
       chunkId: chunk.id,
@@ -232,8 +215,91 @@ export async function scoreClause(
     };
   } catch (err) {
     console.error("OpenAI scoring failed, using fallback:", err);
+    // Try alternate providers if OpenAI errors
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY;
+    const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
+    if (alt) return alt;
     return fallbackScore(chunk, nodes);
   }
+}
+
+async function tryAlternateProviders(
+  chunk: DocumentChunk,
+  nodes: KnowledgeNode[],
+  keys: { geminiKey?: string | undefined; groqKey?: string | undefined }
+): Promise<RiskScore | null> {
+  const prompt = `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`;
+
+  // Try Gemini (only if both key and explicit URL provided)
+  if (keys.geminiKey && process.env.GEMINI_API_URL) {
+    try {
+      const geminiUrl = process.env.GEMINI_API_URL;
+      const resp = await fetch(geminiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${keys.geminiKey}`,
+        },
+        body: JSON.stringify({
+          prompt: buildSystemPrompt(nodes) + "\n\n" + prompt,
+          max_output_tokens: 1000,
+        }),
+      });
+      const data = await resp.json();
+      const text = (data?.candidates?.[0]?.content || data?.output || data?.text || "").toString();
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      return {
+        chunkId: chunk.id,
+        score: parsed.score,
+        riskLevel: parsed.riskLevel,
+        riskFactors: parsed.riskFactors || [],
+        constraintViolations: parsed.constraintViolations || [],
+        recommendation: parsed.recommendation || "",
+      };
+    } catch (e) {
+      console.warn("Gemini scoring failed (skipping):", e);
+    }
+  } else if (keys.geminiKey) {
+    console.info("GEMINI_API_KEY set but GEMINI_API_URL missing — skipping Gemini provider.");
+  }
+
+  // Try GROQ (generic LLM endpoint)
+  if (keys.groqKey && process.env.GROQ_API_URL) {
+    try {
+      const groqUrl = process.env.GROQ_API_URL;
+      const resp = await fetch(groqUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${keys.groqKey}`,
+        },
+        body: JSON.stringify({
+          prompt: buildSystemPrompt(nodes) + "\n\n" + prompt,
+          max_tokens: 1000,
+        }),
+      });
+      const data = await resp.json();
+      const text = (data?.output_text || data?.text || data?.choices?.[0]?.text || "").toString();
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      return {
+        chunkId: chunk.id,
+        score: parsed.score,
+        riskLevel: parsed.riskLevel,
+        riskFactors: parsed.riskFactors || [],
+        constraintViolations: parsed.constraintViolations || [],
+        recommendation: parsed.recommendation || "",
+      };
+    } catch (e) {
+      console.warn("GROQ scoring failed (skipping):", e);
+    }
+  } else if (keys.groqKey) {
+    console.info("GROQ_API_KEY set but GROQ_API_URL missing — skipping GROQ provider.");
+  }
+
+  return null;
 }
 
 // ─── Fallback rule-based scoring (no API key needed) ─────────────────────────
