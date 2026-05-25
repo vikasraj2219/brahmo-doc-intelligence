@@ -1,0 +1,59 @@
+NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement ("Agreement") is entered into as of January 1, 2026 ("Effective Date") between TechCorp Private Limited ("Disclosing Party") and Innovate Solutions Ltd ("Receiving Party").
+
+1. DEFINITIONS
+
+1.1 Confidential Information means any information disclosed by the Disclosing Party to the Receiving Party in connection with the Purpose, whether disclosed orally, in writing, or by any other means, including but not limited to trade secrets, business plans, financial data, technical specifications, customer lists, and proprietary algorithms.
+
+1.2 Purpose means the evaluation of a potential business partnership between the parties for the development of AI-powered legal software.
+
+2. OBLIGATIONS OF RECEIVING PARTY
+
+2.1 The Receiving Party agrees to hold all Confidential Information in strict confidence and not to disclose it to any third party without prior written consent of the Disclosing Party.
+
+2.2 The Receiving Party shall use the Confidential Information solely for the Purpose and for no other purpose whatsoever.
+
+2.3 The Receiving Party shall restrict access to Confidential Information to its employees and contractors who have a need to know such information for the Purpose and who are bound by confidentiality obligations at least as protective as those set forth herein.
+
+3. EXCLUSIONS
+
+3.1 The obligations of confidentiality shall not apply to information that: (a) is or becomes publicly known through no breach of this Agreement; (b) was rightfully known to the Receiving Party prior to disclosure; (c) is independently developed by the Receiving Party without use of the Confidential Information; (d) is required to be disclosed by law or court order.
+
+4. INTELLECTUAL PROPERTY
+
+4.1 All intellectual property, inventions, discoveries, improvements, or works created by the Receiving Party in connection with the Confidential Information shall be assigned to and become the property of the Disclosing Party. This assignment includes all IP developed during the term of this Agreement and for a period of 24 months thereafter.
+
+5. LIABILITY
+
+5.1 Each party acknowledges that breach of this Agreement may cause irreparable harm.
+
+5.2 In the event of any breach of this Agreement, the breaching party shall be liable for unlimited liability for all losses, damages, costs, and expenses incurred by the non-breaching party.
+
+6. TERM AND TERMINATION
+
+6.1 This Agreement shall commence on the Effective Date and shall remain in force for 3 years from the Effective Date.
+
+6.2 Either party may terminate this Agreement by providing 30 days written notice to the other party.
+
+6.3 Upon termination, the Receiving Party agrees to continue maintaining the confidentiality of the Confidential Information for a period of 2 years after termination.
+
+7. INDEMNIFICATION
+
+7.1 The Receiving Party shall indemnify, defend, and hold harmless the Disclosing Party from and against any and all claims, damages, losses, costs, and expenses (including reasonable attorneys' fees) arising out of or resulting from any breach by the Receiving Party of this Agreement or any act or omission of the Receiving Party.
+
+8. GOVERNING LAW AND DISPUTE RESOLUTION
+
+8.1 This Agreement shall be governed by and construed in accordance with the laws of India.
+
+8.2 Any dispute arising out of or in connection with this Agreement, including any question regarding its existence, validity, or termination, shall be referred to and finally resolved by arbitration under the SIAC Rules. The seat of arbitration shall be Singapore. The language of the arbitration shall be English.
+
+9. GENERAL PROVISIONS
+
+9.1 This Agreement constitutes the entire agreement between the parties with respect to its subject matter and supersedes all prior agreements, representations, and understandings.
+
+9.2 No amendment or modification of this Agreement shall be effective unless in writing and signed by both parties.
+
+9.3 If any provision of this Agreement is found to be invalid or unenforceable, the remaining provisions shall remain in full force and effect.
+
+9.4 This Agreement shall be binding upon and inure to the benefit of the parties and their respective successors and assigns.
