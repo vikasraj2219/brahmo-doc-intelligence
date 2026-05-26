@@ -13,14 +13,16 @@ export async function POST(req: NextRequest) {
 
     const nodes = await getKnowledgeNodes();
 
-    // Score all clauses (with concurrency limit of 3)
+    // Score clauses one at a time with a 300ms gap between requests.
+    // This prevents bursting the free-tier rate limits on Groq (12k TPM)
+    // and Gemini (15 RPM). Slower but reliable.
     const scores = [];
-    for (let i = 0; i < chunks.length; i += 3) {
-      const batch = chunks.slice(i, i + 3);
-      const batchScores = await Promise.all(
-        batch.map((chunk) => scoreClause(chunk, nodes))
-      );
-      scores.push(...batchScores);
+    for (let i = 0; i < chunks.length; i++) {
+      const score = await scoreClause(chunks[i], nodes);
+      scores.push(score);
+      if (i < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
 
     // Save scores

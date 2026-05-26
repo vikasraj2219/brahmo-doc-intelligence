@@ -140,177 +140,227 @@ Respond ONLY with valid JSON. No markdown, no preamble:
 }`;
 }
 
-// ─── Score a single clause via LLM ───────────────────────────────────────────
+// ─── Parse JSON safely from LLM text ─────────────────────────────────────────
+
+function parseScore(chunkId: string, raw: string): RiskScore | null {
+  try {
+    const clean = raw.replace(/```json|```/g, "").trim();
+    // Extract the first {...} block in case there's stray text
+    const match = clean.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]);
+    if (typeof parsed.score !== "number") return null;
+    return {
+      chunkId,
+      score: parsed.score,
+      riskLevel: parsed.riskLevel || scoreToLevel(parsed.score),
+      riskFactors: parsed.riskFactors || [],
+      constraintViolations: parsed.constraintViolations || [],
+      recommendation: parsed.recommendation || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Provider 1: Anthropic Claude ────────────────────────────────────────────
+
+async function scoreWithAnthropic(
+  chunk: DocumentChunk,
+  nodes: KnowledgeNode[],
+  apiKey: string
+): Promise<RiskScore | null> {
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001", // fast + cheap, perfect for scoring
+      max_tokens: 1000,
+      system: buildSystemPrompt(nodes),
+      messages: [
+        {
+          role: "user",
+          content: `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`,
+        },
+      ],
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) {
+    console.warn("Anthropic error:", data.error.message);
+    return null;
+  }
+  const text = data.content?.[0]?.text || "";
+  return parseScore(chunk.id, text);
+}
+
+// ─── Provider 2: OpenAI ───────────────────────────────────────────────────────
+
+async function scoreWithOpenAI(
+  chunk: DocumentChunk,
+  nodes: KnowledgeNode[],
+  apiKey: string
+): Promise<RiskScore | null> {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      messages: [
+        { role: "system", content: buildSystemPrompt(nodes) },
+        {
+          role: "user",
+          content: `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`,
+        },
+      ],
+      max_tokens: 1000,
+      temperature: 0,
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) {
+    console.warn("OpenAI error:", data.error.message);
+    return null;
+  }
+  const text = data.choices?.[0]?.message?.content || "";
+  return parseScore(chunk.id, text);
+}
+
+// ─── Provider 3: Gemini ───────────────────────────────────────────────────────
+
+async function scoreWithGemini(
+  chunk: DocumentChunk,
+  nodes: KnowledgeNode[],
+  apiKey: string
+): Promise<RiskScore | null> {
+  // Official Gemini REST endpoint
+  const model = "gemini-2.0-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  const fullPrompt = buildSystemPrompt(nodes) +
+    `\n\nAnalyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: fullPrompt }] }],
+      generationConfig: { maxOutputTokens: 1000, temperature: 0 },
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) {
+    console.warn("Gemini error:", data.error.message);
+    return null;
+  }
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  return parseScore(chunk.id, text);
+}
+
+// ─── Provider 4: Groq ─────────────────────────────────────────────────────────
+
+async function scoreWithGroq(
+  chunk: DocumentChunk,
+  nodes: KnowledgeNode[],
+  apiKey: string
+): Promise<RiskScore | null> {
+  // Correct Groq API endpoint (OpenAI-compatible)
+  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile", // current supported Groq model
+      messages: [
+        { role: "system", content: buildSystemPrompt(nodes) },
+        {
+          role: "user",
+          content: `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`,
+        },
+      ],
+      max_tokens: 1000,
+      temperature: 0,
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) {
+    console.warn("Groq error:", data.error.message);
+    return null;
+  }
+  const text = data.choices?.[0]?.message?.content || "";
+  return parseScore(chunk.id, text);
+}
+
+// ─── Main scorer: try providers in order, fallback to rules ──────────────────
+//
+// Priority order (set whichever key(s) you have in .env.local):
+//   1. ANTHROPIC_API_KEY  — Claude Haiku (fast, cheap, reliable JSON)
+//   2. OPENAI_API_KEY     — GPT-4o-mini
+//   3. GEMINI_API_KEY     — Gemini 1.5 Flash (free tier)
+//   4. GROQ_API_KEY       — Llama3 via Groq (free tier)
+//   5. Rule-based fallback — no API key needed
 
 export async function scoreClause(
   chunk: DocumentChunk,
   nodes: KnowledgeNode[]
 ): Promise<RiskScore> {
-  const openaiKey = process.env.OPENAI_API_KEY; // Set in .env.local; if missing, will use fallback scoring
-
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || process.env.LLM_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
 
-  if (!openaiKey) {
-    // Try Gemini then GROQ before falling back to rule-based scorer
-    const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
-    if (alt) return alt;
-    return fallbackScore(chunk, nodes);
+  // Try each provider in order
+  const providers: Array<() => Promise<RiskScore | null>> = [];
+
+  if (anthropicKey) {
+    providers.push(() => scoreWithAnthropic(chunk, nodes, anthropicKey));
+  }
+  if (openaiKey) {
+    providers.push(() => scoreWithOpenAI(chunk, nodes, openaiKey));
+  }
+  if (geminiKey) {
+    providers.push(() => scoreWithGemini(chunk, nodes, geminiKey));
+  }
+  if (groqKey) {
+    providers.push(() => scoreWithGroq(chunk, nodes, groqKey));
   }
 
-  const userPrompt = `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`;
-
-  try {
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: buildSystemPrompt(nodes) },
-          { role: "user", content: userPrompt },
-        ],
-        max_tokens: 1000,
-        temperature: 0,
-      }),
-    });
-    const data = await resp.json();
-    console.log("OpenAI response:", JSON.stringify(data, null, 2));
-
-    // If OpenAI returned an error (e.g., insufficient_quota), try alternates
-    if (data?.error) {
-      console.warn("OpenAI error:", data.error);
-      const geminiKey = process.env.GEMINI_API_KEY;
-      const groqKey = process.env.GROQ_API_KEY;
-      const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
-      if (alt) return alt;
-      return fallbackScore(chunk, nodes);
-    }
-
-    const text = data.choices?.[0]?.message?.content || "";
-    const clean = (text || "").replace(/```json|```/g, "").trim();
-    let parsed: any;
+  for (const provider of providers) {
     try {
-      parsed = JSON.parse(clean);
-    } catch (pe) {
-      console.warn("OpenAI JSON parse failed:", pe);
-      const geminiKey = process.env.GEMINI_API_KEY;
-      const groqKey = process.env.GROQ_API_KEY;
-      const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
-      if (alt) return alt;
-      return fallbackScore(chunk, nodes);
+      const result = await provider();
+      if (result) return result; // success — return immediately
+    } catch (err) {
+      console.warn("Provider failed, trying next:", (err as Error).message);
     }
-
-    return {
-      chunkId: chunk.id,
-      score: parsed.score,
-      riskLevel: parsed.riskLevel,
-      riskFactors: parsed.riskFactors || [],
-      constraintViolations: parsed.constraintViolations || [],
-      recommendation: parsed.recommendation || "",
-    };
-  } catch (err) {
-    console.error("OpenAI scoring failed, using fallback:", err);
-    // Try alternate providers if OpenAI errors
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
-    const alt = await tryAlternateProviders(chunk, nodes, { geminiKey, groqKey });
-    if (alt) return alt;
-    return fallbackScore(chunk, nodes);
-  }
-}
-
-async function tryAlternateProviders(
-  chunk: DocumentChunk,
-  nodes: KnowledgeNode[],
-  keys: { geminiKey?: string | undefined; groqKey?: string | undefined }
-): Promise<RiskScore | null> {
-  const prompt = `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`;
-
-  // Try Gemini (only if both key and explicit URL provided)
-  if (keys.geminiKey && process.env.GEMINI_API_URL) {
-    try {
-      const geminiUrl = process.env.GEMINI_API_URL;
-      const resp = await fetch(geminiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${keys.geminiKey}`,
-        },
-        body: JSON.stringify({
-          prompt: buildSystemPrompt(nodes) + "\n\n" + prompt,
-          max_output_tokens: 1000,
-        }),
-      });
-      const data = await resp.json();
-      const text = (data?.candidates?.[0]?.content || data?.output || data?.text || "").toString();
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      return {
-        chunkId: chunk.id,
-        score: parsed.score,
-        riskLevel: parsed.riskLevel,
-        riskFactors: parsed.riskFactors || [],
-        constraintViolations: parsed.constraintViolations || [],
-        recommendation: parsed.recommendation || "",
-      };
-    } catch (e) {
-      console.warn("Gemini scoring failed (skipping):", e);
-    }
-  } else if (keys.geminiKey) {
-    console.info("GEMINI_API_KEY set but GEMINI_API_URL missing — skipping Gemini provider.");
   }
 
-  // Try GROQ (generic LLM endpoint)
-  if (keys.groqKey && process.env.GROQ_API_URL) {
-    try {
-      const groqUrl = process.env.GROQ_API_URL;
-      const resp = await fetch(groqUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${keys.groqKey}`,
-        },
-        body: JSON.stringify({
-          prompt: buildSystemPrompt(nodes) + "\n\n" + prompt,
-          max_tokens: 1000,
-        }),
-      });
-      const data = await resp.json();
-      const text = (data?.output_text || data?.text || data?.choices?.[0]?.text || "").toString();
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      return {
-        chunkId: chunk.id,
-        score: parsed.score,
-        riskLevel: parsed.riskLevel,
-        riskFactors: parsed.riskFactors || [],
-        constraintViolations: parsed.constraintViolations || [],
-        recommendation: parsed.recommendation || "",
-      };
-    } catch (e) {
-      console.warn("GROQ scoring failed (skipping):", e);
-    }
-  } else if (keys.groqKey) {
-    console.info("GROQ_API_KEY set but GROQ_API_URL missing — skipping GROQ provider.");
-  }
-
-  return null;
+  // All providers failed or none configured — use rule-based scoring
+  console.log("All LLM providers unavailable — using rule-based fallback scorer");
+  return fallbackScore(chunk, nodes);
 }
 
 // ─── Fallback rule-based scoring (no API key needed) ─────────────────────────
 
 function fallbackScore(chunk: DocumentChunk, nodes: KnowledgeNode[]): RiskScore {
-  const text = chunk.text.toLowerCase();
+  // Include clause title so "NON-COMPETE" heading + "18 months" body both match
+  const text = (chunk.clauseTitle + " " + chunk.text).toLowerCase();
   let score = 1;
   const riskFactors = [];
   const constraintViolations = [];
 
-  // Check against constraint nodes
   if (/unlimited liability|no cap|uncapped/.test(text)) {
     score += 3;
     riskFactors.push({ description: "Uncapped or unlimited liability", scoreImpact: 3 });
@@ -324,7 +374,7 @@ function fallbackScore(chunk: DocumentChunk, nodes: KnowledgeNode[]): RiskScore 
       });
   }
 
-  if (/\b(1[3-9]|2\d)\s*months?\b/.test(text) && /non.?solicit|non.?compet/.test(text)) {
+  if (/\b(1[3-9]|2\d)\s*months?\b/.test(text) && /non.?solicit|non.?compet|not to engage|not to compete/.test(text)) {
     score += 2;
     riskFactors.push({ description: "Non-compete/non-solicitation exceeds 12 months", scoreImpact: 2 });
     const node = nodes.find((n) => n.id === "C-011");
@@ -340,6 +390,14 @@ function fallbackScore(chunk: DocumentChunk, nodes: KnowledgeNode[]): RiskScore 
   if (/all\s+ip|all intellectual property|assigns.*all/.test(text) && !/carve.?out|pre.?existing/.test(text)) {
     score += 2;
     riskFactors.push({ description: "Broad IP assignment without pre-existing IP carve-out", scoreImpact: 2 });
+    const node = nodes.find((n) => n.id === "C-012");
+    if (node)
+      constraintViolations.push({
+        nodeId: "C-012",
+        nodeTitle: node.title,
+        reason: "IP assignment lacks carve-out for pre-existing IP",
+        overrideLevel: "HIGH" as RiskLevel,
+      });
   }
 
   if (/courts? of|jurisdiction of|litigation/.test(text) && !/arbitrat/.test(text)) {
@@ -358,16 +416,40 @@ function fallbackScore(chunk: DocumentChunk, nodes: KnowledgeNode[]): RiskScore 
   if (/\b[1-8]\d?\s*days?\b/.test(text) && /terminat/.test(text)) {
     score += 1;
     riskFactors.push({ description: "Termination notice period appears short (<90 days)", scoreImpact: 1 });
+    const node = nodes.find((n) => n.id === "C-014");
+    if (node)
+      constraintViolations.push({
+        nodeId: "C-014",
+        nodeTitle: node.title,
+        reason: "Notice period appears below the 90-day minimum",
+        overrideLevel: "MEDIUM" as RiskLevel,
+      });
   }
 
   if (/one.?sided|only.*shall indemnify|indemnif.*only/.test(text)) {
     score += 2;
     riskFactors.push({ description: "Potentially one-sided indemnification", scoreImpact: 2 });
+    const node = nodes.find((n) => n.id === "AP-010");
+    if (node)
+      constraintViolations.push({
+        nodeId: "AP-010",
+        nodeTitle: node.title,
+        reason: "Indemnification appears one-sided; mutual indemnity required",
+        overrideLevel: "HIGH" as RiskLevel,
+      });
   }
 
   if (/auto.?renew|automatic.*renew/.test(text) && /30 days|60 days/.test(text)) {
     score += 1;
     riskFactors.push({ description: "Auto-renewal with short opt-out window", scoreImpact: 1 });
+    const node = nodes.find((n) => n.id === "AP-011");
+    if (node)
+      constraintViolations.push({
+        nodeId: "AP-011",
+        nodeTitle: node.title,
+        reason: "Auto-renewal opt-out window is less than 90 days",
+        overrideLevel: "MEDIUM" as RiskLevel,
+      });
   }
 
   const finalScore = Math.min(score, 10);

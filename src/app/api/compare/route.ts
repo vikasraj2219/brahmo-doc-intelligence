@@ -2,53 +2,57 @@ import { NextRequest, NextResponse } from "next/server";
 import { compareClauses } from "@/lib/clause-comparator";
 import { scoreClause } from "@/lib/risk-scorer";
 import { getKnowledgeNodes } from "@/lib/store";
-import { DocumentChunk, ComparisonResult } from "@/lib/types";
+import { DocumentChunk } from "@/lib/types";
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function POST(req: NextRequest) {
   try {
-    const {
-      v1Chunks,
-      v2Chunks,
-    }: { v1Chunks: DocumentChunk[]; v2Chunks: DocumentChunk[] } =
+    const { v1Chunks, v2Chunks }: { v1Chunks: DocumentChunk[]; v2Chunks: DocumentChunk[] } =
       await req.json();
 
     if (!v1Chunks?.length || !v2Chunks?.length) {
-      return NextResponse.json(
-        { error: "Both document chunks required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Both document chunks required" }, { status: 400 });
     }
+
+    console.log(`Comparing: v1 has ${v1Chunks.length} chunks, v2 has ${v2Chunks.length} chunks`);
 
     const nodes = await getKnowledgeNodes();
 
-    // Compare clause structures
+    // ── Step 1: Compare clause structures ──────────────────────────────────
     const results = compareClauses(v1Chunks, v2Chunks);
+    console.log(`Comparison produced ${results.length} results:`, 
+      results.map(r => `${r.matchType}:${r.chunkV1?.clauseNumber || r.chunkV2?.clauseNumber}`).join(", ")
+    );
 
-    // Score clauses that changed (for risk delta)
-    const toScore: Array<{ result: ComparisonResult; side: "v1" | "v2" }> = [];
-    for (const r of results) {
-      if (r.matchType === "MODIFIED" || r.matchType === "ADDED" || r.matchType === "REMOVED") {
-        if (r.chunkV1) toScore.push({ result: r, side: "v1" });
-        if (r.chunkV2) toScore.push({ result: r, side: "v2" });
-      }
-    }
-
-    // Score changed clauses
+    // ── Step 2: Collect all unique chunks to score ──────────────────────────
     const scoreMap = new Map<string, any>();
-    for (let i = 0; i < toScore.length; i += 3) {
-      const batch = toScore.slice(i, i + 3);
-      await Promise.all(
-        batch.map(async ({ result, side }) => {
-          const chunk = side === "v1" ? result.chunkV1 : result.chunkV2;
-          if (!chunk) return;
-          const score = await scoreClause(chunk, nodes);
-          scoreMap.set(`${chunk.id}`, score);
-        })
-      );
+    const seen = new Set<string>();
+    const toScore: DocumentChunk[] = [];
+
+    for (const r of results) {
+      if (r.chunkV1 && !seen.has(r.chunkV1.id)) { seen.add(r.chunkV1.id); toScore.push(r.chunkV1); }
+      if (r.chunkV2 && !seen.has(r.chunkV2.id)) { seen.add(r.chunkV2.id); toScore.push(r.chunkV2); }
     }
 
-    // Attach scores and compute risk delta
+    console.log(`Scoring ${toScore.length} unique chunks...`);
+
+    // ── Step 3: Score one at a time with 500ms gap (safe for all free tiers) ─
+    for (let i = 0; i < toScore.length; i++) {
+      const chunk = toScore[i];
+      try {
+        const score = await scoreClause(chunk, nodes);
+        scoreMap.set(chunk.id, score);
+        console.log(`Scored ${i + 1}/${toScore.length}: ${chunk.clauseTitle} → ${score.riskLevel} (${score.score}/10)`);
+      } catch (err) {
+        console.warn(`Score failed for ${chunk.clauseTitle}:`, err);
+      }
+      if (i < toScore.length - 1) await delay(500);
+    }
+
+    // ── Step 4: Attach scores + compute risk delta ──────────────────────────
     let totalDelta = 0;
+
     for (const r of results) {
       if (r.chunkV1) r.riskV1 = scoreMap.get(r.chunkV1.id);
       if (r.chunkV2) r.riskV2 = scoreMap.get(r.chunkV2.id);
@@ -69,13 +73,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({
+    const response = {
       results,
       netDelta: totalDelta > 1 ? "INCREASED" : totalDelta < -1 ? "DECREASED" : "UNCHANGED",
       changedCount: results.filter((r) => r.matchType === "MODIFIED").length,
-      addedCount: results.filter((r) => r.matchType === "ADDED").length,
+      addedCount:   results.filter((r) => r.matchType === "ADDED").length,
       removedCount: results.filter((r) => r.matchType === "REMOVED").length,
-    });
+    };
+
+    console.log(`Compare complete: ${response.changedCount} modified, ${response.addedCount} added, ${response.removedCount} removed`);
+    return NextResponse.json(response);
+
   } catch (err: any) {
     console.error("Compare error:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useRef } from "react";
 import DocumentUpload from "@/components/DocumentUpload";
 import RiskHeatmap from "@/components/RiskHeatmap";
 import ComparisonView from "@/components/ComparisonView";
@@ -8,88 +8,112 @@ import KnowledgePanel from "@/components/KnowledgePanel";
 import { DocumentChunk, RiskScore, ComparisonResult } from "@/lib/types";
 
 type Mode = "idle" | "single" | "compare";
-type Step = "upload" | "scoring" | "results" | "uploading-v2" | "comparing" | "comparison-results";
+type Step = "upload" | "scoring" | "results" | "uploading-v2" | "comparison-results";
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>("idle");
-  const [step, setStep] = useState<Step>("upload");
-  const [v1Doc, setV1Doc] = useState<{ name: string; chunks: DocumentChunk[] } | null>(null);
-  const [v2Doc, setV2Doc] = useState<{ name: string; chunks: DocumentChunk[] } | null>(null);
-  const [riskScores, setRiskScores] = useState<RiskScore[]>([]);
-  const [riskSummary, setRiskSummary] = useState<{ high: number; medium: number; low: number } | null>(null);
-  const [comparisonResults, setComparisonResults] = useState<ComparisonResult[]>([]);
-  const [netDelta, setNetDelta] = useState<"INCREASED" | "DECREASED" | "UNCHANGED" | null>(null);
-  const [compareSummary, setCompareSummary] = useState<{ changed: number; added: number; removed: number } | null>(null);
+  const [mode, setMode]                   = useState<Mode>("idle");
+  const [step, setStep]                   = useState<Step>("upload");
+  const [v1Name, setV1Name]               = useState("");
+  const [v2Name, setV2Name]               = useState("");
+  const [riskScores, setRiskScores]       = useState<RiskScore[]>([]);
+  const [riskSummary, setRiskSummary]     = useState<{ high: number; medium: number; low: number } | null>(null);
+  const [compResults, setCompResults]     = useState<ComparisonResult[]>([]);
+  const [netDelta, setNetDelta]           = useState<"INCREASED" | "DECREASED" | "UNCHANGED" | null>(null);
+  const [compSummary, setCompSummary]     = useState<{ changed: number; added: number; removed: number } | null>(null);
   const [showKnowledge, setShowKnowledge] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]                 = useState<string | null>(null);
+  const [statusMsg, setStatusMsg]         = useState("");
 
-  // ── Upload a document ──────────────────────────────────────────────────────
-  const handleUpload = useCallback(async (file: File, isV2 = false) => {
+  // Use a ref to store v1 chunks — avoids stale closure issues with useCallback
+  const v1ChunksRef = useRef<DocumentChunk[]>([]);
+
+  // ── Upload v1 ──────────────────────────────────────────────────────────────
+  const handleUploadV1 = async (file: File) => {
     setError(null);
-    setStep(isV2 ? "uploading-v2" : "scoring");
+    setStep("scoring");
+    setStatusMsg("Extracting clauses...");
 
-    const form = new FormData();
-    form.append("file", file);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const uploadRes = await fetch("/api/upload", { method: "POST", body: form });
+      if (!uploadRes.ok) throw new Error((await uploadRes.json()).error || "Upload failed");
+      const { document, chunks } = await uploadRes.json();
 
-    const uploadRes = await fetch("/api/upload", { method: "POST", body: form });
-    if (!uploadRes.ok) {
-      const err = await uploadRes.json();
-      setError(err.error || "Upload failed");
-      setStep(isV2 ? "uploading-v2" : "upload");
-      return;
-    }
+      setV1Name(document.filename);
+      v1ChunksRef.current = chunks;
 
-    const { document, chunks } = await uploadRes.json();
-
-    if (!isV2) {
-      setV1Doc({ name: document.filename, chunks });
-
-      // Score risk
+      setStatusMsg(`Scoring ${chunks.length} clauses...`);
       const scoreRes = await fetch("/api/score-risk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chunks }),
       });
+      if (!scoreRes.ok) throw new Error((await scoreRes.json()).error || "Scoring failed");
       const scoreData = await scoreRes.json();
-      setRiskScores(scoreData.scores);
+
+      setRiskScores(scoreData.scores || []);
       setRiskSummary(scoreData.summary);
       setMode("single");
       setStep("results");
-    } else {
-      setV2Doc({ name: document.filename, chunks });
+      setStatusMsg("");
+    } catch (err: any) {
+      setError(err.message);
+      setStep("upload");
+      setStatusMsg("");
+    }
+  };
 
-      // Compare
+  // ── Upload v2 and compare ──────────────────────────────────────────────────
+  const handleUploadV2 = async (file: File) => {
+    setError(null);
+    setStep("uploading-v2");
+    setStatusMsg("Uploading v2...");
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const uploadRes = await fetch("/api/upload", { method: "POST", body: form });
+      if (!uploadRes.ok) throw new Error((await uploadRes.json()).error || "Upload failed");
+      const { document, chunks: v2Chunks } = await uploadRes.json();
+      setV2Name(document.filename);
+
+      setStatusMsg(`Comparing clauses and scoring changes...`);
       const compareRes = await fetch("/api/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ v1Chunks: v1Doc!.chunks, v2Chunks: chunks }),
+        body: JSON.stringify({ v1Chunks: v1ChunksRef.current, v2Chunks }),
       });
+      if (!compareRes.ok) throw new Error((await compareRes.json()).error || "Compare failed");
       const compareData = await compareRes.json();
-      setComparisonResults(compareData.results);
+
+      setCompResults(compareData.results || []);
       setNetDelta(compareData.netDelta);
-      setCompareSummary({
+      setCompSummary({
         changed: compareData.changedCount,
-        added: compareData.addedCount,
+        added:   compareData.addedCount,
         removed: compareData.removedCount,
       });
       setMode("compare");
       setStep("comparison-results");
+      setStatusMsg("");
+    } catch (err: any) {
+      setError(err.message);
+      setStep("results"); // go back to single doc results
+      setStatusMsg("");
     }
-  }, [v1Doc]);
+  };
 
   const reset = () => {
-    setMode("idle");
-    setStep("upload");
-    setV1Doc(null);
-    setV2Doc(null);
-    setRiskScores([]);
-    setRiskSummary(null);
-    setComparisonResults([]);
-    setNetDelta(null);
-    setCompareSummary(null);
-    setError(null);
-    setShowKnowledge(false);
+    setMode("idle"); setStep("upload");
+    setV1Name(""); setV2Name("");
+    setRiskScores([]); setRiskSummary(null);
+    setCompResults([]); setNetDelta(null); setCompSummary(null);
+    setShowKnowledge(false); setError(null); setStatusMsg("");
+    v1ChunksRef.current = [];
   };
+
+  const isLoading = step === "scoring" || step === "uploading-v2";
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white font-mono">
@@ -106,18 +130,14 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-3">
           {(mode === "single" || mode === "compare") && (
-            <button
-              onClick={() => setShowKnowledge(!showKnowledge)}
-              className="text-xs border border-white/20 px-3 py-1.5 hover:border-amber-400/50 hover:text-amber-400 transition-all"
-            >
+            <button onClick={() => setShowKnowledge(!showKnowledge)}
+              className="text-xs border border-white/20 px-3 py-1.5 hover:border-amber-400/50 hover:text-amber-400 transition-all">
               {showKnowledge ? "HIDE" : "SHOW"} FIRM KNOWLEDGE
             </button>
           )}
           {mode !== "idle" && (
-            <button
-              onClick={reset}
-              className="text-xs border border-white/20 px-3 py-1.5 hover:border-red-400/50 hover:text-red-400 transition-all"
-            >
+            <button onClick={reset}
+              className="text-xs border border-white/20 px-3 py-1.5 hover:border-red-400/50 hover:text-red-400 transition-all">
               ← NEW ANALYSIS
             </button>
           )}
@@ -125,112 +145,109 @@ export default function Home() {
       </header>
 
       <div className="flex min-h-[calc(100vh-73px)]">
-        {/* Main content */}
-        <main className="flex-1 p-8">
+        <main className="flex-1 p-8 overflow-y-auto">
 
-          {/* ── Idle / Upload state ─────────────────────────────────── */}
-          {mode === "idle" && step === "upload" && (
+          {/* ── IDLE: upload ─────────────────────────────────────────── */}
+          {mode === "idle" && !isLoading && (
             <div className="max-w-2xl mx-auto mt-16">
               <div className="mb-10">
-                <h1 className="text-3xl font-bold tracking-tight mb-3">
-                  Contract Intelligence
-                </h1>
+                <h1 className="text-3xl font-bold tracking-tight mb-3">Contract Intelligence</h1>
                 <p className="text-white/50 text-sm leading-relaxed">
                   Upload a contract for instant risk assessment, or upload two versions
                   for clause-by-clause comparison. Powered by firm-specific knowledge rules.
                 </p>
               </div>
-              <DocumentUpload onUpload={(f) => handleUpload(f, false)} label="Upload Contract (DOCX / PDF)" />
+              <DocumentUpload onUpload={handleUploadV1} label="Upload Contract (DOCX / PDF / TXT)" />
               {error && (
-                <div className="mt-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-400 text-sm">
-                  ⚠ {error}
-                </div>
+                <div className="mt-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-400 text-sm">⚠ {error}</div>
               )}
             </div>
           )}
 
-          {/* ── Loading state ───────────────────────────────────────── */}
-          {(step === "scoring" || step === "uploading-v2" || step === "comparing") && (
+          {/* ── LOADING spinner ───────────────────────────────────────── */}
+          {isLoading && (
             <div className="max-w-2xl mx-auto mt-24 text-center">
               <div className="inline-block w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mb-6" />
-              <p className="text-white/60 text-sm tracking-wider">
-                {step === "scoring" && "EXTRACTING CLAUSES + SCORING RISK..."}
-                {step === "uploading-v2" && "PROCESSING REVISED CONTRACT..."}
-                {step === "comparing" && "COMPARING CLAUSES..."}
-              </p>
+              <p className="text-white/60 text-sm tracking-wider">{statusMsg || "PROCESSING..."}</p>
+              <p className="text-white/30 text-xs mt-2">This may take 15–30 seconds for free-tier AI providers</p>
             </div>
           )}
 
-          {/* ── Single doc results ──────────────────────────────────── */}
-          {mode === "single" && step === "results" && v1Doc && (
+          {/* ── SINGLE DOC: risk heatmap ──────────────────────────────── */}
+          {mode === "single" && step === "results" && (
             <div>
               <div className="flex items-start justify-between mb-8">
                 <div>
                   <div className="text-white/40 text-xs tracking-widest mb-1">RISK ASSESSMENT</div>
-                  <h2 className="text-xl font-bold truncate max-w-lg">{v1Doc.name}</h2>
+                  <h2 className="text-xl font-bold truncate max-w-lg">{v1Name}</h2>
                   {riskSummary && (
                     <div className="flex gap-4 mt-2 text-sm">
-                      <span className="text-red-400">{riskSummary.high} HIGH</span>
-                      <span className="text-amber-400">{riskSummary.medium} MEDIUM</span>
-                      <span className="text-green-400">{riskSummary.low} LOW</span>
+                      <span className="text-red-400 font-bold">{riskSummary.high} HIGH</span>
+                      <span className="text-amber-400 font-bold">{riskSummary.medium} MEDIUM</span>
+                      <span className="text-green-400 font-bold">{riskSummary.low} LOW</span>
                     </div>
                   )}
                 </div>
-                <div>
-                  <div className="text-white/40 text-xs mb-2 text-right">COMPARE WITH REVISED VERSION</div>
-                  <DocumentUpload
-                    onUpload={(f) => handleUpload(f, true)}
-                    label="Upload v2"
-                    compact
-                  />
+                <div className="text-right">
+                  <div className="text-white/40 text-xs mb-2">COMPARE WITH REVISED VERSION</div>
+                  <DocumentUpload onUpload={handleUploadV2} label="+ Upload v2" compact />
                 </div>
               </div>
-              <RiskHeatmap chunks={v1Doc.chunks} scores={riskScores} />
+              {error && (
+                <div className="mb-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-400 text-sm">⚠ {error}</div>
+              )}
+              <RiskHeatmap chunks={v1ChunksRef.current} scores={riskScores} />
             </div>
           )}
 
-          {/* ── Comparison results ──────────────────────────────────── */}
-          {mode === "compare" && step === "comparison-results" && v1Doc && v2Doc && (
+          {/* ── COMPARISON results ────────────────────────────────────── */}
+          {mode === "compare" && step === "comparison-results" && (
             <div>
               <div className="flex items-start justify-between mb-6">
                 <div>
                   <div className="text-white/40 text-xs tracking-widest mb-1">COMPARISON RESULTS</div>
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="text-white/60 truncate max-w-xs">{v1Doc.name}</span>
+                  <div className="flex items-center gap-3 text-sm flex-wrap">
+                    <span className="text-white/60 truncate max-w-xs">{v1Name}</span>
                     <span className="text-white/30">→</span>
-                    <span className="text-white/60 truncate max-w-xs">{v2Doc.name}</span>
+                    <span className="text-white/60 truncate max-w-xs">{v2Name}</span>
                   </div>
-                  {compareSummary && (
+                  {compSummary && (
                     <div className="flex gap-4 mt-2 text-sm">
-                      <span className="text-amber-400">{compareSummary.changed} MODIFIED</span>
-                      <span className="text-green-400">{compareSummary.added} ADDED</span>
-                      <span className="text-red-400">{compareSummary.removed} REMOVED</span>
+                      <span className="text-amber-400 font-bold">{compSummary.changed} MODIFIED</span>
+                      <span className="text-green-400 font-bold">{compSummary.added} ADDED</span>
+                      <span className="text-red-400 font-bold">{compSummary.removed} REMOVED</span>
                     </div>
                   )}
                 </div>
                 {netDelta && (
                   <div className={`border px-4 py-2 text-sm font-bold tracking-widest ${
-                    netDelta === "INCREASED"
-                      ? "border-red-500/50 bg-red-500/10 text-red-400"
-                      : netDelta === "DECREASED"
-                      ? "border-green-500/50 bg-green-500/10 text-green-400"
-                      : "border-white/20 text-white/50"
+                    netDelta === "INCREASED" ? "border-red-500/50 bg-red-500/10 text-red-400" :
+                    netDelta === "DECREASED" ? "border-green-500/50 bg-green-500/10 text-green-400" :
+                    "border-white/20 text-white/50"
                   }`}>
                     NET RISK {netDelta} {netDelta === "INCREASED" ? "↑" : netDelta === "DECREASED" ? "↓" : "→"}
                   </div>
                 )}
               </div>
-              <ComparisonView results={comparisonResults} />
+              {error && (
+                <div className="mb-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-400 text-sm">⚠ {error}</div>
+              )}
+              <ComparisonView results={compResults} />
             </div>
           )}
+
         </main>
 
-        {/* Knowledge panel */}
+        {/* Knowledge sidebar */}
         {showKnowledge && (
           <aside className="w-80 border-l border-white/10 p-6 overflow-y-auto">
             <KnowledgePanel activeViolations={
-              riskScores.flatMap(s => s.constraintViolations || [])
-                .concat(comparisonResults.flatMap(r => [...(r.riskV1?.constraintViolations || []), ...(r.riskV2?.constraintViolations || [])]))
+              riskScores.flatMap(s => s.constraintViolations || []).concat(
+                compResults.flatMap(r => [
+                  ...(r.riskV1?.constraintViolations || []),
+                  ...(r.riskV2?.constraintViolations || []),
+                ])
+              )
             } />
           </aside>
         )}
