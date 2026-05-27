@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       const score = await scoreClause(chunks[i], nodes);
       scores.push(score);
       if (i < chunks.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
 

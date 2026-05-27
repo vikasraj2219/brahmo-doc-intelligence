@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
 
     console.log(`Scoring ${toScore.length} unique chunks...`);
 
-    // ── Step 3: Score one at a time with 500ms gap (safe for all free tiers) ─
+    // ── Step 3: Score one at a time with 300ms gap (safe for all free tiers) ─
     for (let i = 0; i < toScore.length; i++) {
       const chunk = toScore[i];
       try {
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.warn(`Score failed for ${chunk.clauseTitle}:`, err);
       }
-      if (i < toScore.length - 1) await delay(500);
+      if (i < toScore.length - 1) await delay(300);
     }
 
     // ── Step 4: Attach scores + compute risk delta ──────────────────────────

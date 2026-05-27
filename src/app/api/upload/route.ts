@@ -27,6 +27,7 @@ export async function POST(req: NextRequest) {
     await saveDocument(document);
 
     const chunks = chunkDocument(docId, text);
+    console.log(`Document chunked into ${chunks} chunks`);
     await saveChunks(chunks);
 
     return NextResponse.json({ document, chunks });

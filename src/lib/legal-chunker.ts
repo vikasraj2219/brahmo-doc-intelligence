@@ -30,7 +30,7 @@ function isClauseBoundary(line: string): {
 
   // Pattern 1: Numbered heading "1. Title" or "1.2 Title"
   const numberedMatch = trimmed.match(
-    /^(\d+(?:\.\d+)*\.?)\s+([A-Z][^\n]{2,80})/
+    /^(\d+[A-Z]?(?:\.\d+[A-Z]?)*\.?)\s+([A-Z][^\n]{2,80})/
   );
   if (numberedMatch) {
     return {
@@ -52,8 +52,8 @@ function isClauseBoundary(line: string): {
     };
   }
 
-  // Pattern 3: UPPERCASE standalone heading (min 5 chars, no punctuation mid-word)
-  const uppercaseMatch = trimmed.match(/^([A-Z][A-Z\s\-]{4,50})$/);
+  // Pattern 3: UPPERCASE standalone heading (min 3 chars, no punctuation mid-word)
+  const uppercaseMatch = trimmed.match(/^([A-Z][A-Z\s\-]{2,50})$/);
   if (uppercaseMatch && !/\d/.test(trimmed)) {
     return {
       isHeading: true,

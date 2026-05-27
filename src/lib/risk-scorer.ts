@@ -221,7 +221,7 @@ async function scoreWithOpenAI(
           content: `Analyze this contract clause for risk:\n\nClause ${chunk.clauseNumber}: ${chunk.clauseTitle}\nType: ${chunk.clauseType}\n\n${chunk.text}`,
         },
       ],
-      max_tokens: 1000,
+      max_tokens: 100000,
       temperature: 0,
     }),
   });
@@ -317,14 +317,17 @@ export async function scoreClause(
   chunk: DocumentChunk,
   nodes: KnowledgeNode[]
 ): Promise<RiskScore> {
+  const groqKey = process.env.GROQ_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY || process.env.LLM_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
-  const groqKey = process.env.GROQ_API_KEY;
 
   // Try each provider in order
   const providers: Array<() => Promise<RiskScore | null>> = [];
 
+  if (groqKey) {
+    providers.push(() => scoreWithGroq(chunk, nodes, groqKey));
+  }
   if (anthropicKey) {
     providers.push(() => scoreWithAnthropic(chunk, nodes, anthropicKey));
   }
@@ -334,9 +337,7 @@ export async function scoreClause(
   if (geminiKey) {
     providers.push(() => scoreWithGemini(chunk, nodes, geminiKey));
   }
-  if (groqKey) {
-    providers.push(() => scoreWithGroq(chunk, nodes, groqKey));
-  }
+
 
   for (const provider of providers) {
     try {
@@ -463,7 +464,7 @@ function fallbackScore(chunk: DocumentChunk, nodes: KnowledgeNode[]): RiskScore 
       finalScore >= 7
         ? "Immediate review required. Negotiate terms before signing."
         : finalScore >= 4
-        ? "Review recommended. Discuss with client."
-        : "Standard terms. No immediate action required.",
+          ? "Review recommended. Discuss with client."
+          : "Standard terms. No immediate action required.",
   };
 }
